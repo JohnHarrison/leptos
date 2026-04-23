@@ -352,6 +352,11 @@ where
         let eff = reactive_graph::effect::Effect::new_isomorphic({
             let children = Arc::clone(&children);
             let notify_error_boundary = notify_error_boundary.clone();
+            // tracks whether a task has ever been registered in this Suspense.
+            // if none ever has, no resolving resource could gate a nested
+            // read, so the double-check pass would do no work and we can skip
+            // it (avoiding an extra invocation of the children body).
+            let mut any_task_ever_seen = false;
             move |double_checking: Option<bool>| {
                 // Subscribe to `tasks` before reading on every run, unless the notification
                 // has already been sent via `tasks_tx`
@@ -379,9 +384,13 @@ where
 
                 if let Some(curr_tasks) = curr_tasks {
                     if curr_tasks.is_empty() {
-                        if double_checking == Some(true) {
-                            // we have finished loading, and checking the children again told us there are
-                            // no more pending tasks. so we can render both the children and the error boundary
+                        if double_checking == Some(true) || !any_task_ever_seen
+                        {
+                            // either we've finished the confirming dry-walk,
+                            // or no task has ever been registered — in both
+                            // cases there is nothing more to discover, so we
+                            // can render both the children and the error
+                            // boundary
 
                             if let Some(tx) = tasks_tx.take() {
                                 // If the receiver has dropped, it means the ScopedFuture has already
@@ -425,6 +434,10 @@ where
                             // tell ourselves that we're just double-checking
                             return true;
                         }
+                    } else {
+                        // `tasks` is already tracked above (#4851), so only
+                        // record that a task was seen.
+                        any_task_ever_seen = true;
                     }
                 }
                 false

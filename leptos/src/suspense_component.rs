@@ -99,6 +99,13 @@ pub fn Suspense<Chil>(
     /// Children will be rendered once initially to catch any resource reads, then hidden until all
     /// data have loaded.
     children: TypedChildren<Chil>,
+    /// If `true`, disables the SSR "double-check" pass that re-walks the
+    /// children after initial resources resolve in order to discover
+    /// conditional/nested resource reads. Enable this when the children body
+    /// has no conditional resource reads but does have side effects that
+    /// should not fire more than once per render.
+    #[prop(optional)]
+    strict: bool,
 ) -> impl IntoView
 where
     Chil: IntoView + Send + 'static,
@@ -142,6 +149,7 @@ where
             children,
             error_boundary_parent,
             has_tasks,
+            strict,
         })
     })
 }
@@ -165,6 +173,10 @@ pub(crate) struct SuspenseBoundary<const TRANSITION: bool, Fal, Chil> {
     pub children: Chil,
     pub error_boundary_parent: Option<ErrorBoundarySuspendedChildren>,
     pub has_tasks: Arc<dyn Fn() -> bool + Send + Sync>,
+    /// If `true`, the children are only walked once to register resources.
+    /// Conditional resource reads that depend on other resources will not be
+    /// discovered, but side effects in the children body run fewer times.
+    pub strict: bool,
 }
 
 impl<const TRANSITION: bool, Fal, Chil> Render
@@ -259,6 +271,7 @@ where
             children,
             error_boundary_parent,
             has_tasks,
+            strict,
         } = self;
         SuspenseBoundary {
             id,
@@ -267,6 +280,7 @@ where
             children: children.add_any_attr(attr),
             error_boundary_parent,
             has_tasks,
+            strict,
         }
     }
 }
@@ -349,6 +363,7 @@ where
         let children = Arc::new(Mutex::new(Some(self.children)));
 
         // check the set of tasks to see if it is empty, now or later
+        let strict = self.strict;
         let eff = reactive_graph::effect::Effect::new_isomorphic({
             let children = Arc::clone(&children);
             let notify_error_boundary = notify_error_boundary.clone();
@@ -384,7 +399,9 @@ where
 
                 if let Some(curr_tasks) = curr_tasks {
                     if curr_tasks.is_empty() {
-                        if double_checking == Some(true) || !any_task_ever_seen
+                        if strict
+                            || double_checking == Some(true)
+                            || !any_task_ever_seen
                         {
                             // either we've finished the confirming dry-walk,
                             // or no task has ever been registered — in both
